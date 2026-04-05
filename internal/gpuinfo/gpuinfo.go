@@ -54,6 +54,14 @@ type QueryMetrics struct {
 	DrivVer string `json:"drivver"`
 	FanSpe  int    `json:"fanspe"`
 	Pstat   string `json:"pstat"`
+	TempGpu  int     `json:"tempgpu"`
+	TempMem  int     `json:"tempmem"`
+	PwrDraw  float64 `json:"pwrdraw"`
+	UtilMem  int     `json:"utilmem"`
+	UtilEnc  int     `json:"utilenc"`
+	UtilDec  int     `json:"utildec"`
+	ClockGfx int     `json:"clockgfx"`
+	ClockMem int     `json:"clockmem"`
 }
 
 type GpuState struct {
@@ -207,7 +215,14 @@ func runQuery(ctx context.Context, logger *slog.Logger, gpu GPU, interval time.D
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.free,driver_version,fan.speed,pstate", "--format=csv,noheader,nounits", "-i", gpu.Uuid)
+			cmd := exec.CommandContext(
+				ctx,
+				"nvidia-smi",
+				"--query-gpu=utilization.gpu,memory.used,memory.free,driver_version,fan.speed,pstate,temperature.gpu,temperature.memory,power.draw,utilization.memory,utilization.encoder,utilization.decoder,clocks.current.graphics,clocks.current.memory",
+				"--format=csv,noheader,nounits",
+				"-i",
+				gpu.Uuid,
+			)
 
 			output, err := cmd.Output()
 			if err != nil {
@@ -297,6 +312,7 @@ func parseInt(s string) int {
 func parseDmonLine(line string) DmonMetrics {
 	parts := strings.Split(line, ",")
 	if len(parts) != 22 {
+		// dmon CSV columns vary by driver/version in some environments.
 		return DmonMetrics{}
 	}
 
@@ -330,18 +346,39 @@ func parseDmonLine(line string) DmonMetrics {
 
 func parseQueryLine(line string) QueryMetrics {
 	parts := strings.Split(strings.TrimSpace(line), ",")
-	if len(parts) != 6 {
+	const wantedFields = 14
+	if len(parts) != wantedFields {
 		return QueryMetrics{}
 	}
 
 	return QueryMetrics{
-		UtilGpu: parseInt(parts[0]),
-		MemUsed: parseInt(parts[1]),
-		MemFree: parseInt(parts[2]),
-		DrivVer: strings.TrimSpace(parts[3]),
-		FanSpe:  parseInt(parts[4]),
-		Pstat:   strings.TrimSpace(parts[5]),
+		UtilGpu:  parseInt(parts[0]),
+		MemUsed:  parseInt(parts[1]),
+		MemFree:  parseInt(parts[2]),
+		DrivVer:  strings.TrimSpace(parts[3]),
+		FanSpe:   parseInt(parts[4]),
+		Pstat:    strings.TrimSpace(parts[5]),
+		TempGpu:  parseInt(parts[6]),
+		TempMem:  parseInt(parts[7]),
+		PwrDraw:  parseFloat(parts[8]),
+		UtilMem:  parseInt(parts[9]),
+		UtilEnc:  parseInt(parts[10]),
+		UtilDec:  parseInt(parts[11]),
+		ClockGfx: parseInt(parts[12]),
+		ClockMem: parseInt(parts[13]),
 	}
+}
+
+func parseFloat(s string) float64 {
+	val := strings.TrimSpace(s)
+	if val == "-" || val == "" || strings.EqualFold(val, "N/A") || strings.Contains(strings.ToUpper(val), "NOT SUPPORTED") {
+		return 0
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 func isValidGPUUUID(uuid string) bool {
